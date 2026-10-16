@@ -1,0 +1,196 @@
+// sudoku.cpp - Brute-force DFS / backtracking Sudoku solver that finds ALL solutions.
+//
+// Design
+//   Grid   : the 9x9 board. Owns the cells, tracks which digits are used in each
+//            row/column/block (bitmasks), loads/prints itself, and answers
+//            "which cell is empty?" and "what are its candidates?".
+//   Solver : owns a working Grid and a list of solutions. Its recursive method
+//            search() implements the DFS + backtracking algorithm.
+//   main() : only drives the five puzzle files and prints the report.
+
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+
+// ---------------------------------------------------------------------------
+// Grid: the board state
+// ---------------------------------------------------------------------------
+class Grid {
+public:
+    static constexpr int N = 9;     // board size
+    static constexpr int B = 3;     // block size
+
+    Grid() { reset(); }
+
+    // Read 81 cells from a file: digits 1-9 are givens, '_' (also '.' or '0')
+    // is blank. Whitespace is ignored, so "5 3 _ ..." and "53_..." both work.
+    // Returns false if the file is missing/malformed.
+    bool loadFromFile(const std::string& path) {
+        std::ifstream in(path);
+        if (!in) return false;
+        reset();
+        int count = 0;
+        char ch;
+        while (count < N * N && in.get(ch)) {
+            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') continue;
+            int r = count / N, c = count % N;
+            if (ch >= '1' && ch <= '9') {
+                if (!place(r, c, ch - '0')) {                      // duplicate given:
+                    cells_[r][c] = ch - '0';                       // keep it so the original
+                    consistent_ = false;                           // prints faithfully
+                }
+            } else if (ch != '_' && ch != '.' && ch != '0') {
+                return false;                                      // bad character
+            }
+            ++count;
+        }
+        return count == N * N;
+    }
+
+    // False if the givens already break a row/column/block rule.
+    bool isConsistent() const { return consistent_; }
+
+    bool isComplete() const { return filled_ == N * N; }
+
+    // Step 1: first empty cell in row-major order. False if the grid is full.
+    bool findEmpty(int& row, int& col) const {
+        for (int r = 0; r < N; ++r)
+            for (int c = 0; c < N; ++c)
+                if (cells_[r][c] == 0) { row = r; col = c; return true; }
+        return false;
+    }
+
+    // Step 2: candidates for (r,c) = digits not used in its row, column or block.
+    std::vector<int> candidates(int r, int c) const {
+        int used = rowUsed_[r] | colUsed_[c] | boxUsed_[boxIndex(r, c)];
+        std::vector<int> out;
+        for (int d = 1; d <= 9; ++d)
+            if (!(used & (1 << d))) out.push_back(d);
+        return out;
+    }
+
+    // Put digit d at (r,c). Returns false (and changes nothing) if it conflicts.
+    bool place(int r, int c, int d) {
+        int bit = 1 << d, b = boxIndex(r, c);
+        if (cells_[r][c] != 0 || (rowUsed_[r] & bit) || (colUsed_[c] & bit) ||
+            (boxUsed_[b] & bit))
+            return false;
+        cells_[r][c] = d;
+        rowUsed_[r] |= bit; colUsed_[c] |= bit; boxUsed_[b] |= bit;
+        ++filled_;
+        return true;
+    }
+
+    // Undo a placement (the "backtrack" step).
+    void clear(int r, int c) {
+        int d = cells_[r][c];
+        if (d == 0) return;
+        int bit = 1 << d, b = boxIndex(r, c);
+        cells_[r][c] = 0;
+        rowUsed_[r] &= ~bit; colUsed_[c] &= ~bit; boxUsed_[b] &= ~bit;
+        --filled_;
+    }
+
+    void print(std::ostream& os) const {
+        for (int r = 0; r < N; ++r) {
+            if (r > 0 && r % B == 0) os << "------+-------+------\n";
+            for (int c = 0; c < N; ++c) {
+                if (c > 0 && c % B == 0) os << "| ";
+                os << (cells_[r][c] ? char('0' + cells_[r][c]) : '_');
+                os << (c < N - 1 ? " " : "");
+            }
+            os << '\n';
+        }
+    }
+
+private:
+    static int boxIndex(int r, int c) { return (r / B) * B + (c / B); }
+
+    void reset() {
+        for (auto& row : cells_) for (int& v : row) v = 0;
+        for (int i = 0; i < N; ++i) rowUsed_[i] = colUsed_[i] = boxUsed_[i] = 0;
+        filled_ = 0;
+        consistent_ = true;
+    }
+
+    int cells_[N][N];
+    int rowUsed_[N], colUsed_[N], boxUsed_[N];  // bit d set => digit d is used
+    int filled_;
+    bool consistent_;
+};
+
+// ---------------------------------------------------------------------------
+// Solver: recursive DFS + backtracking that collects every solution
+// ---------------------------------------------------------------------------
+class Solver {
+public:
+    explicit Solver(const Grid& puzzle) : grid_(puzzle) {}
+
+    // Runs the search and returns all solutions found (possibly none).
+    const std::vector<Grid>& solveAll() {
+        solutions_.clear();
+        if (grid_.isConsistent()) search();
+        return solutions_;
+    }
+
+private:
+    void search() {
+        int r, c;
+        if (!grid_.findEmpty(r, c)) {          // all 81 cells filled: a solution
+            solutions_.push_back(grid_);
+            return;                            // keep going elsewhere for more
+        }
+        for (int d : grid_.candidates(r, c)) { // no candidates => loop is empty => backtrack
+            grid_.place(r, c, d);              // try the candidate
+            search();                          // recurse with one more cell filled
+            grid_.clear(r, c);                 // undo and try the next candidate
+        }
+    }
+
+    Grid grid_;                    // working copy, mutated during the search
+    std::vector<Grid> solutions_;  // every complete grid found
+};
+
+// ---------------------------------------------------------------------------
+int main(int argc, char* argv[]) {
+    std::vector<std::string> files;
+    if (argc > 1) {
+        for (int i = 1; i < argc; ++i) files.push_back(argv[i]);
+    } else {
+        for (int i = 1; i <= 5; ++i) files.push_back("puzzle" + std::to_string(i) + ".txt");
+    }
+
+    for (const std::string& name : files) {
+        std::cout << "==============================\n"
+                  << name << "\n"
+                  << "==============================\n";
+
+        Grid puzzle;
+        if (!puzzle.loadFromFile(name)) {
+            std::cout << "Could not read a valid 9x9 puzzle from this file.\n\n";
+            continue;
+        }
+
+        std::cout << "Original puzzle:\n";
+        puzzle.print(std::cout);
+
+        if (!puzzle.isConsistent())
+            std::cout << "\n(The given digits already repeat in a row, column or block.)\n";
+
+        Solver solver(puzzle);
+        const std::vector<Grid>& solutions = solver.solveAll();
+
+        if (solutions.empty()) {
+            std::cout << "\nNo solution found\n\n";
+            continue;
+        }
+        std::cout << "\n" << solutions.size() << " solution(s) found\n";
+        for (std::size_t i = 0; i < solutions.size(); ++i) {
+            std::cout << "\nSolution " << (i + 1) << ":\n";
+            solutions[i].print(std::cout);
+        }
+        std::cout << '\n';
+    }
+    return 0;
+}
